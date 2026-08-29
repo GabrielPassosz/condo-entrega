@@ -1,0 +1,22 @@
+{
+  "name": "condo-entrega-whatsapp-service",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Serviço protegido de conexão e envio WhatsApp para o CondoEntrega.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "check": "node --check index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "express": "^4.21.2",
+    "pino": "^10.3.1",
+    "qrcode": "^1.5.4"
+  }
+}

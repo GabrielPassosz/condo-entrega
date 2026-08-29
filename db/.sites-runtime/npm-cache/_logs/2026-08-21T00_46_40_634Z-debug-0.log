@@ -1,0 +1,18 @@
+0 verbose cli C:\Program Files\nodejs\node.exe C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js
+1 info using npm@11.17.0
+2 info using node@v24.19.0
+3 silly config load:file:C:\Program Files\nodejs\node_modules\npm\npmrc
+4 silly config load:file:C:\Users\Pichau\Desktop\Condo_Entrega\.npmrc
+5 silly config load:file:C:\Users\Pichau\.npmrc
+6 silly config load:file:C:\Users\Pichau\AppData\Roaming\npm\etc\npmrc
+7 verbose title npm run dev
+8 verbose argv "run" "dev"
+9 verbose logfile logs-max:10 dir:C:\Users\Pichau\Desktop\Condo_Entrega\db\.sites-runtime\npm-cache\_logs\2026-08-21T00_46_40_634Z-
+10 verbose logfile C:\Users\Pichau\Desktop\Condo_Entrega\db\.sites-runtime\npm-cache\_logs\2026-08-21T00_46_40_634Z-debug-0.log
+11 silly logfile done cleaning log files
+12 verbose cwd C:\Users\Pichau\Desktop\Condo_Entrega\db
+13 verbose os Windows_NT 10.0.26200
+14 verbose node v24.19.0
+15 verbose npm  v11.17.0
+16 verbose exit 1
+17 verbose code 1
