@@ -1,0 +1,1 @@
+CREATE INDEX `packages_whatsapp_message_idx` ON `packages` (`whatsapp_message_id`) WHERE "packages"."whatsapp_message_id" <> '';

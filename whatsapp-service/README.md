@@ -1,4 +1,8 @@
-# Serviço WhatsApp do CondoEntrega
+# Serviço WhatsApp legado do CondoEntrega
+
+> **Descontinuado para novas instalações.** O portal usa a WhatsApp Business
+> Platform oficial. Mantenha este processo apenas durante uma migração com
+> prazo definido; ele exige `ALLOW_LEGACY_BAILEYS=true` no portal.
 
 Este processo mantém a sessão do WhatsApp conectada e expõe somente uma API
 protegida para o portal. Ele não precisa exibir o QR Code no terminal: o portal
@@ -14,6 +18,5 @@ consulta `/qr` e mostra a imagem na área administrativa.
 Mantenha `DATA_DIR` em armazenamento persistente. A pasta contém credenciais da
 sessão do WhatsApp e nunca deve ser publicada ou compartilhada.
 
-O serviço utiliza Baileys, uma integração não oficial. É apropriado para um
-piloto controlado; para operação comercial em escala, migre o envio para a API
-oficial do WhatsApp Business.
+O serviço utiliza Baileys, uma integração não oficial, sem garantia de protocolo
+ou de continuidade do número. Não o use como canal comercial definitivo.

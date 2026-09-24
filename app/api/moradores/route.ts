@@ -1,7 +1,13 @@
 import { and, asc, eq } from "drizzle-orm";
 import { getDb } from "../../../db";
 import { residents } from "../../../db/schema";
-import { ApiError, apiError, readJson } from "../../../lib/api";
+import {
+  ApiError,
+  apiError,
+  readJson,
+  requireSameOrigin,
+} from "../../../lib/api";
+import { writeAudit } from "../../../lib/audit";
 import { getActor, requireRole } from "../../../lib/auth";
 import {
   composeUnit,
@@ -11,7 +17,7 @@ import {
   safeText,
 } from "../../../lib/normalize";
 
-type ResidentInput = {
+export type ResidentInput = {
   unit?: unknown;
   unidade?: unknown;
   block?: unknown;
@@ -27,9 +33,22 @@ type ResidentInput = {
   autorizados?: unknown;
   notes?: unknown;
   observacoes?: unknown;
+  whatsappOptIn?: unknown;
+  consentimentoWhatsapp?: unknown;
 };
 
-export function residentValues(input: ResidentInput, condominiumId: number) {
+function consentValue(value: unknown) {
+  if (typeof value === "boolean") return value;
+  return ["1", "sim", "yes", "true", "autorizado"].includes(
+    String(value ?? "").trim().toLocaleLowerCase("pt-BR"),
+  );
+}
+
+export function residentValues(
+  input: ResidentInput,
+  condominiumId: number,
+  existingWhatsappOptInAt: string | null = null,
+) {
   const block = safeText(input.block ?? input.bloco, 30);
   const apartment = safeText(input.apartment ?? input.apartamento, 30);
   const unit = composeUnit({
@@ -40,6 +59,13 @@ export function residentValues(input: ResidentInput, condominiumId: number) {
   const name = safeText(input.name ?? input.nome, 160);
   const phone = normalizePhone(input.phone ?? input.telefone);
   const email = normalizeEmail(input.email);
+  const rawConsent = input.whatsappOptIn ?? input.consentimentoWhatsapp;
+  const whatsappOptInAt =
+    rawConsent === undefined
+      ? existingWhatsappOptInAt
+      : consentValue(rawConsent)
+        ? existingWhatsappOptInAt || new Date().toISOString()
+        : null;
 
   if (!unit || !name || phone.length < 12 || phone.length > 15) {
     throw new ApiError(
@@ -61,16 +87,20 @@ export function residentValues(input: ResidentInput, condominiumId: number) {
       500,
     ),
     notes: safeText(input.notes ?? input.observacoes, 1000),
+    whatsappOptInAt,
     normalizedName: normalizeText(name),
     normalizedUnit: normalizeText(unit),
     updatedAt: new Date().toISOString(),
   };
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const actor = await getActor();
     const db = getDb();
+    const includeInactive =
+      actor.role === "admin" &&
+      new URL(request.url).searchParams.get("includeInactive") === "1";
     const condition =
       actor.role === "resident"
         ? and(
@@ -78,10 +108,12 @@ export async function GET() {
             eq(residents.id, actor.residentId ?? -1),
             eq(residents.active, true),
           )
-        : and(
-            eq(residents.condominiumId, actor.condominiumId),
-            eq(residents.active, true),
-          );
+        : includeInactive
+          ? eq(residents.condominiumId, actor.condominiumId)
+          : and(
+              eq(residents.condominiumId, actor.condominiumId),
+              eq(residents.active, true),
+            );
     const rows = await db
       .select()
       .from(residents)
@@ -95,6 +127,7 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
+    requireSameOrigin(request);
     const actor = await getActor();
     requireRole(actor, ["admin"]);
     const input = await readJson<ResidentInput>(request);
@@ -112,6 +145,10 @@ export async function POST(request: Request) {
         set: { ...values, active: true },
       })
       .returning();
+    await writeAudit(actor, "resident.created_or_updated", "resident", row.id, {
+      active: true,
+      whatsappOptIn: Boolean(row.whatsappOptInAt),
+    });
     return Response.json({ resident: row }, { status: 201 });
   } catch (error) {
     return apiError(error);

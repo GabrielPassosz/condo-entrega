@@ -1,105 +1,86 @@
 # CondoEntrega
 
-Portal web responsivo para o recebimento de encomendas em condomínios. O
-porteiro abre a plataforma no celular ou computador, fotografa a etiqueta,
-confere o morador sugerido e registra a chegada. O morador recebe a foto pelo
-WhatsApp e acompanha suas próprias encomendas no portal.
+SaaS responsivo para recebimento e retirada de encomendas em condomínios. A
+portaria fotografa a etiqueta, o navegador executa OCR, um operador confirma o
+morador e o sistema registra a encomenda antes de avisá-lo pela WhatsApp
+Business Platform oficial.
 
-O projeto não depende de Streamlit nem de um computador na portaria.
+## O que está implementado
 
-## Fluxo implementado
+- Multi-tenancy real: perfis, moradores, encomendas, configurações e auditoria
+  são isolados por condomínio; um usuário pode alternar entre seus ambientes.
+- Bootstrap seguro: somente e-mails em `INITIAL_ADMIN_EMAILS` podem criar a
+  primeira instalação, e apenas enquanto o banco estiver vazio.
+- Confirmação humana obrigatória: qualquer alteração ou nova busca da etiqueta
+  limpa a seleção anterior do morador.
+- Registro resiliente: foto determinística no R2, idempotência, transação D1
+  para encomenda + outbox, timeout e reenvio de notificações.
+- Retirada protegida: código de seis dígitos cifrado com AES-GCM, validação por
+  HMAC, incremento concorrente das tentativas e desbloqueio administrativo.
+- LGPD por construção: o texto bruto do OCR não é salvo; fotos expiram; códigos
+  são apagados após retirada; moradores podem ser desativados, excluídos ou
+  anonimizados; consentimento de WhatsApp é registrado.
+- Operação administrativa: edição e desativação de moradores e acessos,
+  importação em lotes, listagens paginadas, reenvio, exclusão e auditoria.
+- WhatsApp oficial: envio de modelo aprovado com foto pela Meta Cloud API,
+  webhook assinado e acompanhamento de `sent`, `delivered`, `read` e `failed`.
 
-1. O porteiro abre **Receber** e usa a câmera do navegador ou envia uma foto.
-2. O navegador tenta ler QR Code/código de barras e executa OCR na etiqueta.
-3. A API cruza nome, bloco, apartamento e unidade com a lista de moradores.
-4. O porteiro precisa confirmar o morador; o envio nunca é automático sem essa
-   confirmação.
-5. A foto é armazenada em R2 e os dados são registrados em D1.
-6. O serviço WhatsApp envia foto, descrição e código de retirada.
-7. Na entrega, a portaria valida o código de seis dígitos e registra quem
-   retirou. Cinco códigos errados bloqueiam novas tentativas para aquela
-   encomenda.
+## Fluxo de consistência
 
-## Perfis e privacidade
+1. O cliente cria uma chave idempotente e envia foto + morador confirmado.
+2. O R2 recebe a foto em uma chave determinística.
+3. Uma única transação D1 cria a encomenda e o job da outbox.
+4. A fila (ou o processador síncrono de contingência) chama a Meta com timeout.
+5. O resultado e o log são atualizados em lote; falhas entram em backoff e
+   também podem ser reenviadas manualmente.
 
-- **Administrador:** moradores, importação de planilha, acessos, encomendas e
-  conexão do WhatsApp.
-- **Portaria:** fotografia, leitura, registro, consulta e retirada.
-- **Morador:** somente suas encomendas, fotos e códigos de retirada.
-
-O primeiro usuário autenticado cria o condomínio e se torna administrador. Os
-demais precisam ter o e-mail vinculado na tela **Moradores > Acessos**. Um
-morador também pode ser vinculado automaticamente quando seu e-mail no cadastro
-é igual ao e-mail usado para entrar.
-
-As rotas de foto e dados validam o perfil no servidor. Uma URL de imagem não dá
-acesso à foto de outro morador.
-
-## Componentes
+## Tecnologia
 
 - Next.js/Vinext em Cloudflare Workers.
-- Cloudflare D1 para moradores, perfis, encomendas e histórico de avisos.
+- Cloudflare D1 com Drizzle ORM.
 - Cloudflare R2 para fotos privadas.
-- OCR no navegador com Tesseract.js.
-- Barcode Detection API do navegador quando disponível, com preenchimento
-  manual como alternativa.
-- Serviço Node separado em `whatsapp-service/`, usando Baileys e armazenamento
-  persistente para a sessão.
+- Cloudflare Queues opcional, com outbox D1 durável como fonte de verdade.
+- Tesseract.js e Barcode Detection API no navegador.
+- Sign in with ChatGPT com vínculo pelo identificador estável do usuário.
 
-## Configuração do portal
+## Desenvolvimento
 
-As ligações `DB` e `BUCKET` estão declaradas em `.openai/hosting.json`. Configure
-as variáveis descritas em `.env.example` no ambiente de hospedagem:
-
-- `CONDOMINIUM_NAME`
-- `WHATSAPP_SERVICE_URL`
-- `WHATSAPP_SERVICE_TOKEN`
-- `SITE_ORIGIN`
-
-Para desenvolvimento, use Node.js 22 ou superior:
+Requer Node.js 22.13 ou superior.
 
 ```bash
-npm install
-npm run db:generate
+npm ci
+npm run typecheck
+npm run lint
+npm test
 npm run dev
 ```
 
-A migração inicial está em `drizzle/0000_fancy_sumo.sql`.
+As migrações são imutáveis e devem ser aplicadas em ordem:
 
-## Lista de moradores
+- `drizzle/0000_fancy_sumo.sql`
+- `drizzle/0001_condemned_maelstrom.sql`
+- `drizzle/0002_watery_stark_industries.sql`
 
-Uma planilha pronta está em `docs/moradores_modelo.xlsx`. A primeira linha deve
-usar títulos como:
+Não execute `db:generate` durante o deploy; ele serve para criar uma nova
+migração durante o desenvolvimento.
 
-- `Nome`
-- `Telefone` — DDI + DDD + número, por exemplo `5541999998888`
-- `Unidade`, ou a combinação `Bloco` e `Apartamento`
-- `Email`, `Autorizados` e `Observacoes` são opcionais
+## Configuração e operação
 
-A importação aceita até 2.000 linhas por arquivo e relata as linhas inválidas.
+Copie os nomes de configuração de `.env.example`. Antes de tornar a URL
+pública, configure obrigatoriamente `INITIAL_ADMIN_EMAILS` e
+`PICKUP_CODE_SECRET`.
 
-## Conexão do WhatsApp dentro do portal
+- [Publicação e WhatsApp oficial](DEPLOY.md)
+- [Backups, restauração e política de dados](docs/OPERATIONS.md)
+- [Modelo de planilha de moradores](docs/moradores_modelo.xlsx)
 
-O administrador tem duas opções na tela **WhatsApp**:
+Na planilha, `Nome`, `Telefone` e `Unidade` (ou `Bloco` + `Apartamento`) são
+obrigatórios. `Email`, `Autorizados`, `Observacoes` e
+`Consentimento WhatsApp` são opcionais. A importação valida até 2.000 linhas e
+grava em lotes D1.
 
-- **QR Code:** ideal quando o portal está aberto em outro celular ou computador.
-- **Código de pareamento:** ideal quando o portal está aberto no mesmo telefone
-  do WhatsApp, pois não é possível apontar a câmera para a própria tela.
+## Serviço Baileys legado
 
-O QR Code é transformado em imagem pelo serviço e exibido somente ao
-administrador autenticado. O terminal nunca precisa mostrar o código.
-
-Veja `whatsapp-service/README.md` e `DEPLOY.md` para publicar o serviço.
-
-## Verificação antes de produção
-
-- Troque todos os valores de exemplo por segredos fortes.
-- Use HTTPS no portal e no serviço WhatsApp.
-- Mantenha `DATA_DIR` em volume persistente e fora de backups públicos.
-- Faça um teste com um número e um morador de homologação.
-- Confira foto, texto, código, retirada e isolamento entre dois moradores.
-- Defina uma política de retenção das fotos adequada ao condomínio e à LGPD.
-
-Baileys é uma integração não oficial. Para alta escala ou operação que exija
-suporte oficial, substitua o serviço pela WhatsApp Business Platform mantendo o
-mesmo contrato interno de envio.
+`whatsapp-service/` permanece somente para uma migração controlada. Ele não é
+ativado automaticamente: exige `WHATSAPP_PROVIDER=baileys` e
+`ALLOW_LEGACY_BAILEYS=true`. Novas instalações devem usar a Cloud API oficial.

@@ -1,20 +1,23 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, like, or, sql, type SQL } from "drizzle-orm";
 import { env } from "cloudflare:workers";
 import { getDb } from "../../../db";
 import {
   condominiums,
-  messageLogs,
+  notificationJobs,
   packages,
   residents,
 } from "../../../db/schema";
-import { ApiError, apiError } from "../../../lib/api";
+import { ApiError, apiError, requireSameOrigin } from "../../../lib/api";
+import { writeAudit } from "../../../lib/audit";
 import { getActor, requireRole } from "../../../lib/auth";
-import { safeText } from "../../../lib/normalize";
+import { expiryDate } from "../../../lib/dates";
+import { enqueuePackageNotification } from "../../../lib/notifications";
 import {
-  buildPackageMessage,
-  callWhatsapp,
-  whatsappConfigured,
-} from "../../../lib/whatsapp-service";
+  generatePickupCode,
+  protectPickupCode,
+  revealPickupCode,
+} from "../../../lib/pickup-code";
+import { safeText } from "../../../lib/normalize";
 
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
 const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -25,132 +28,113 @@ function getBucket() {
   return bucket;
 }
 
-function pickupCode() {
-  const value = crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000;
-  return String(value).padStart(6, "0");
-}
-
-function extensionFor(type: string) {
-  if (type === "image/png") return "png";
-  if (type === "image/webp") return "webp";
-  return "jpg";
-}
-
-function toBase64(bytes: Uint8Array) {
-  let binary = "";
-  const chunk = 0x8000;
-  for (let index = 0; index < bytes.length; index += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(index, index + chunk));
-  }
-  return btoa(binary);
-}
-
-async function sendNotification(input: {
-  packageId: number;
-  phone: string;
-  message: string;
-  photoBytes: Uint8Array;
-  photoMime: string;
+async function residentPickupCode(row: {
+  id: number;
+  idempotencyKey: string;
+  pickupCode: string;
+  pickupCodeEncrypted: string;
 }) {
-  const db = getDb();
-  if (!whatsappConfigured()) {
-    await db
-      .update(packages)
-      .set({
-        notificationStatus: "not_configured",
-        notificationError: "Conecte o WhatsApp na área administrativa.",
-      })
-      .where(eq(packages.id, input.packageId));
-    return { status: "not_configured" as const, error: "WhatsApp não configurado." };
+  if (row.pickupCodeEncrypted) {
+    return revealPickupCode(
+      row.pickupCodeEncrypted,
+      row.idempotencyKey || `legacy-package-${row.id}`,
+    );
   }
-
-  try {
-    const response = await callWhatsapp<{ ok: boolean; messageId?: string }>("/send", {
-      method: "POST",
-      body: JSON.stringify({
-        telefone: input.phone,
-        mensagem: input.message,
-        foto_base64: toBase64(input.photoBytes),
-        foto_mime: input.photoMime,
-        idempotency_key: String(input.packageId),
-      }),
-    });
-    const now = new Date().toISOString();
-    const remoteId = response.messageId ?? "";
-    await db.batch([
-      db
-        .update(packages)
-        .set({
-          notificationStatus: "sent",
-          notificationError: "",
-          whatsappMessageId: remoteId,
-          notifiedAt: now,
-        })
-        .where(eq(packages.id, input.packageId)),
-      db.insert(messageLogs).values({
-        packageId: input.packageId,
-        status: "sent",
-        remoteId,
-      }),
-    ]);
-    return { status: "sent" as const, error: "" };
-  } catch (error) {
-    const message = error instanceof Error ? error.message.slice(0, 500) : "Falha no envio.";
-    await db.batch([
-      db
-        .update(packages)
-        .set({ notificationStatus: "failed", notificationError: message })
-        .where(eq(packages.id, input.packageId)),
-      db.insert(messageLogs).values({
-        packageId: input.packageId,
-        status: "failed",
-        error: message,
-      }),
-    ]);
-    return { status: "failed" as const, error: message };
-  }
+  return /^\d{6}$/.test(row.pickupCode) ? row.pickupCode : undefined;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const actor = await getActor();
-    const condition =
-      actor.role === "resident"
-        ? and(
-            eq(packages.condominiumId, actor.condominiumId),
-            eq(packages.residentId, actor.residentId ?? -1),
-          )
-        : eq(packages.condominiumId, actor.condominiumId);
-    const rows = await getDb()
-      .select({
-        id: packages.id,
-        residentId: packages.residentId,
-        residentName: residents.name,
-        unit: residents.unit,
-        description: packages.description,
-        trackingCode: packages.trackingCode,
-        status: packages.status,
-        notificationStatus: packages.notificationStatus,
-        notificationError: packages.notificationError,
-        registeredBy: packages.registeredBy,
-        withdrawnBy: packages.withdrawnBy,
-        receivedAt: packages.receivedAt,
-        notifiedAt: packages.notifiedAt,
-        withdrawnAt: packages.withdrawnAt,
-        pickupCode: packages.pickupCode,
-      })
-      .from(packages)
-      .innerJoin(residents, eq(packages.residentId, residents.id))
-      .where(condition)
-      .orderBy(desc(packages.receivedAt))
-      .limit(250);
+    const url = new URL(request.url);
+    const page = Math.max(
+      1,
+      Math.floor(Number(url.searchParams.get("page")) || 1),
+    );
+    const pageSize = Math.max(
+      1,
+      Math.min(
+        100,
+        Math.floor(Number(url.searchParams.get("pageSize")) || 50),
+      ),
+    );
+    const status = url.searchParams.get("status");
+    const query = safeText(url.searchParams.get("q"), 100);
+    const conditions: SQL[] = [eq(packages.condominiumId, actor.condominiumId)];
+    if (actor.role === "resident") {
+      conditions.push(eq(packages.residentId, actor.residentId ?? -1));
+    }
+    if (status === "waiting" || status === "withdrawn") {
+      conditions.push(eq(packages.status, status));
+    }
+    if (query) {
+      const pattern = `%${query}%`;
+      const search = or(
+        like(residents.name, pattern),
+        like(residents.unit, pattern),
+        like(packages.description, pattern),
+        like(packages.trackingCode, pattern),
+      );
+      if (search) conditions.push(search);
+    }
+    const condition = and(...conditions);
+    const db = getDb();
+    const [[totalRow], rows] = await Promise.all([
+      db
+        .select({ value: count() })
+        .from(packages)
+        .innerJoin(residents, eq(packages.residentId, residents.id))
+        .where(condition),
+      db
+        .select({
+          id: packages.id,
+          residentId: packages.residentId,
+          residentName: residents.name,
+          unit: residents.unit,
+          description: packages.description,
+          trackingCode: packages.trackingCode,
+          status: packages.status,
+          notificationStatus: packages.notificationStatus,
+          notificationError: packages.notificationError,
+          registeredBy: packages.registeredBy,
+          withdrawnBy: packages.withdrawnBy,
+          failedPickupAttempts: packages.failedPickupAttempts,
+          receivedAt: packages.receivedAt,
+          notifiedAt: packages.notifiedAt,
+          withdrawnAt: packages.withdrawnAt,
+          pickupCode: packages.pickupCode,
+          pickupCodeEncrypted: packages.pickupCodeEncrypted,
+          idempotencyKey: packages.idempotencyKey,
+          photoKey: packages.photoKey,
+        })
+        .from(packages)
+        .innerJoin(residents, eq(packages.residentId, residents.id))
+        .where(condition)
+        .orderBy(desc(packages.receivedAt), desc(packages.id))
+        .limit(pageSize)
+        .offset((page - 1) * pageSize),
+    ]);
 
-    return Response.json({
-      packages: rows.map((row) => ({
+    const mapped = await Promise.all(
+      rows.map(async (row) => ({
         ...row,
-        pickupCode: actor.role === "resident" ? row.pickupCode : undefined,
-        photoUrl: `/api/fotos/${row.id}`,
+        pickupCode:
+          actor.role === "resident" ? await residentPickupCode(row) : undefined,
+        pickupCodeEncrypted: undefined,
+        idempotencyKey: undefined,
+        photoKey: undefined,
+        photoUrl: row.photoKey ? `/api/fotos/${row.id}` : "",
       })),
+    );
+    const total = totalRow?.value ?? 0;
+    return Response.json({
+      packages: mapped,
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      },
     });
   } catch (error) {
     return apiError(error);
@@ -158,12 +142,15 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  let uploadedPhotoKey = "";
   try {
+    requireSameOrigin(request);
     const actor = await getActor();
     requireRole(actor, ["admin", "porter"]);
     const form = await request.formData();
     const photo = form.get("photo");
     const residentId = Number(form.get("residentId"));
+    const idempotencyKey = safeText(form.get("idempotencyKey"), 100);
     if (!(photo instanceof File) || !ALLOWED_IMAGE_TYPES.has(photo.type)) {
       throw new ApiError(400, "Tire ou selecione uma foto JPG, PNG ou WebP.");
     }
@@ -173,69 +160,203 @@ export async function POST(request: Request) {
     if (!Number.isInteger(residentId) || residentId <= 0) {
       throw new ApiError(400, "Confirme o morador antes de registrar.");
     }
+    if (!/^[a-zA-Z0-9_-]{16,100}$/.test(idempotencyKey)) {
+      throw new ApiError(400, "Identificador seguro da operação ausente.");
+    }
 
     const db = getDb();
-    const [resident] = await db
+    const [duplicate] = await db
       .select()
-      .from(residents)
+      .from(packages)
       .where(
         and(
-          eq(residents.id, residentId),
-          eq(residents.condominiumId, actor.condominiumId),
-          eq(residents.active, true),
+          eq(packages.condominiumId, actor.condominiumId),
+          eq(packages.idempotencyKey, idempotencyKey),
         ),
       )
       .limit(1);
+    if (duplicate) {
+      const [duplicateResident] = await db
+        .select({ name: residents.name, unit: residents.unit })
+        .from(residents)
+        .where(
+          and(
+            eq(residents.id, duplicate.residentId),
+            eq(residents.condominiumId, actor.condominiumId),
+          ),
+        )
+        .limit(1);
+      return Response.json({
+        package: {
+          id: duplicate.id,
+          residentName: duplicateResident?.name ?? "Morador",
+          unit: duplicateResident?.unit ?? "",
+          pickupCode: await residentPickupCode(duplicate),
+          photoUrl: duplicate.photoKey ? `/api/fotos/${duplicate.id}` : "",
+        },
+        notification: {
+          status: duplicate.notificationStatus,
+          error: duplicate.notificationError,
+        },
+        duplicate: true,
+      });
+    }
+
+    const [[resident], [condominium]] = await Promise.all([
+      db
+        .select()
+        .from(residents)
+        .where(
+          and(
+            eq(residents.id, residentId),
+            eq(residents.condominiumId, actor.condominiumId),
+            eq(residents.active, true),
+          ),
+        )
+        .limit(1),
+      db
+        .select()
+        .from(condominiums)
+        .where(
+          and(
+            eq(condominiums.id, actor.condominiumId),
+            eq(condominiums.active, true),
+          ),
+        )
+        .limit(1),
+    ]);
     if (!resident) throw new ApiError(404, "Morador não encontrado.");
+    if (!condominium) throw new ApiError(404, "Condomínio não encontrado.");
 
-    const [condominium] = await db
-      .select()
-      .from(condominiums)
-      .where(eq(condominiums.id, actor.condominiumId))
-      .limit(1);
-    const code = pickupCode();
+    const code = generatePickupCode();
+    const protectedCode = await protectPickupCode(code, idempotencyKey);
     const photoBytes = new Uint8Array(await photo.arrayBuffer());
-    const photoKey = `${actor.condominiumId}/packages/${crypto.randomUUID()}.${extensionFor(photo.type)}`;
-    await getBucket().put(photoKey, photoBytes, {
+    // A chave determinística permite que uma repetição após queda sobrescreva
+    // o mesmo objeto, em vez de criar fotos órfãs no R2.
+    uploadedPhotoKey = `${actor.condominiumId}/packages/${idempotencyKey}`;
+    await getBucket().put(uploadedPhotoKey, photoBytes, {
       httpMetadata: { contentType: photo.type },
-      customMetadata: { uploadedBy: actor.email },
+      customMetadata: { profileId: String(actor.id) },
     });
 
-    const description = safeText(form.get("description"), 300);
-    const trackingCode = safeText(form.get("trackingCode"), 200);
-    const scanText = safeText(form.get("scanText"), 12000);
-    const [created] = await db
-      .insert(packages)
-      .values({
-        condominiumId: actor.condominiumId,
-        residentId,
-        description,
-        trackingCode,
-        scanText,
-        photoKey,
-        photoMime: photo.type,
-        pickupCode: code,
-        registeredBy: actor.displayName,
-      })
-      .returning();
+    const now = new Date().toISOString();
+    let created;
+    try {
+      const packageValues = {
+          condominiumId: actor.condominiumId,
+          residentId,
+          description: safeText(form.get("description"), 300),
+          trackingCode: safeText(form.get("trackingCode"), 200),
+          // O OCR serve somente para a correspondência em memória. O texto
+          // integral da etiqueta não é persistido por minimização de dados.
+          scanText: "",
+          photoKey: uploadedPhotoKey,
+          photoMime: photo.type,
+          photoExpiresAt: expiryDate(condominium.photoRetentionDays),
+          idempotencyKey,
+          pickupCode: "",
+          pickupCodeEncrypted: protectedCode.encrypted,
+          pickupCodeHash: protectedCode.hash,
+          registeredBy: actor.displayName,
+          receivedAt: now,
+        };
+      await db.batch([
+        db.insert(packages).values(packageValues),
+        db.insert(notificationJobs).values({
+          condominiumId: actor.condominiumId,
+          packageId: sql<number>`(
+            SELECT ${packages.id}
+            FROM ${packages}
+            WHERE ${packages.condominiumId} = ${actor.condominiumId}
+              AND ${packages.idempotencyKey} = ${idempotencyKey}
+            LIMIT 1
+          )`,
+          availableAt: now,
+        }),
+      ]);
+      [created] = await db
+        .select()
+        .from(packages)
+        .where(
+          and(
+            eq(packages.condominiumId, actor.condominiumId),
+            eq(packages.idempotencyKey, idempotencyKey),
+          ),
+        )
+        .limit(1);
+      if (!created) throw new Error("A encomenda não foi confirmada pelo banco.");
+    } catch (error) {
+      const [existing] = await db
+        .select()
+        .from(packages)
+        .where(
+          and(
+            eq(packages.condominiumId, actor.condominiumId),
+            eq(packages.idempotencyKey, idempotencyKey),
+          ),
+        )
+        .limit(1);
+      if (!existing) {
+        await getBucket().delete(uploadedPhotoKey).catch(() => undefined);
+        uploadedPhotoKey = "";
+        throw error;
+      }
+      // Outra requisição com a mesma chave venceu a corrida e referencia o
+      // mesmo objeto determinístico; não remova a foto confirmada por ela.
+      uploadedPhotoKey = "";
+      const [existingResident] = await db
+        .select({ name: residents.name, unit: residents.unit })
+        .from(residents)
+        .where(
+          and(
+            eq(residents.id, existing.residentId),
+            eq(residents.condominiumId, actor.condominiumId),
+          ),
+        )
+        .limit(1);
+      return Response.json({
+        package: {
+          id: existing.id,
+          residentName: existingResident?.name ?? "Morador",
+          unit: existingResident?.unit ?? "",
+          pickupCode: await residentPickupCode(existing),
+          photoUrl: existing.photoKey ? `/api/fotos/${existing.id}` : "",
+        },
+        notification: {
+          status: existing.notificationStatus,
+          error: existing.notificationError,
+        },
+        duplicate: true,
+      });
+    }
+    uploadedPhotoKey = "";
 
-    const notification = await sendNotification({
-      packageId: created.id,
-      phone: resident.phone,
-      message: buildPackageMessage({
-        residentName: resident.name,
-        condominiumName: condominium?.name ?? "Condomínio",
-        description,
-        pickupCode: code,
-      }),
-      photoBytes,
-      photoMime: photo.type,
-    });
+    let notification;
+    try {
+      notification = await enqueuePackageNotification(
+        created.id,
+        actor.condominiumId,
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message.slice(0, 500)
+          : "Falha ao enfileirar o aviso.";
+      await db
+        .update(packages)
+        .set({ notificationStatus: "failed", notificationError: message })
+        .where(eq(packages.id, created.id));
+      notification = { status: "failed" as const, error: message };
+    }
+    await writeAudit(actor, "package.created", "package", created.id, {
+      notificationStatus: notification.status,
+      photoExpiresAt: created.photoExpiresAt ?? "",
+    }).catch((error) => console.error("Falha ao gravar auditoria", error));
 
     return Response.json(
       {
         package: {
-          ...created,
+          id: created.id,
           residentName: resident.name,
           unit: resident.unit,
           pickupCode: code,
@@ -246,6 +367,9 @@ export async function POST(request: Request) {
       { status: 201 },
     );
   } catch (error) {
+    if (uploadedPhotoKey) {
+      await getBucket().delete(uploadedPhotoKey).catch(() => undefined);
+    }
     return apiError(error);
   }
 }

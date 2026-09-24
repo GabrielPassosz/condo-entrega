@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { register } from "node:module";
 import test from "node:test";
+
+register(new URL("./cloudflare-loader.mjs", import.meta.url));
 
 const developmentPreviewMeta =
   /<meta(?=[^>]*\bname=["']codex-preview["'])(?=[^>]*\bcontent=["']development["'])[^>]*>/i;
@@ -11,7 +14,11 @@ test("renders development preview metadata", async () => {
 
   const response = await worker.fetch(
     new Request("http://localhost/", {
-      headers: { accept: "text/html" },
+      headers: {
+        accept: "text/html",
+        "oai-authenticated-user-id": "render-test-user",
+        "oai-authenticated-user-email": "render@example.com",
+      },
     }),
     {
       ASSETS: {

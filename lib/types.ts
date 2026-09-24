@@ -1,17 +1,24 @@
 export type ActorRole = "admin" | "porter" | "resident";
 
 export type Actor = {
-  id: number;
-  condominiumId: number;
-  residentId: number | null;
-  email: string;
   displayName: string;
   role: ActorRole;
 };
 
 export type BootstrapData = {
   actor: Actor;
-  condominium: { id: number; name: string };
+  condominium: {
+    id: number;
+    name: string;
+    slug: string;
+    timezone: string;
+    photoRetentionDays: number;
+  };
+  memberships: {
+    condominiumId: number;
+    condominiumName: string;
+    role: ActorRole;
+  }[];
   stats: {
     residents: number;
     waiting: number;
@@ -19,6 +26,7 @@ export type BootstrapData = {
     notificationFailures: number;
   };
   whatsappConfigured: boolean;
+  whatsappProvider: "cloud_api" | "baileys" | "disabled";
 };
 
 export type Resident = {
@@ -31,6 +39,8 @@ export type Resident = {
   email: string;
   authorizedPeople: string;
   notes: string;
+  whatsappOptInAt: string | null;
+  active: boolean;
 };
 
 export type PackageRecord = {
@@ -41,15 +51,40 @@ export type PackageRecord = {
   description: string;
   trackingCode: string;
   status: "waiting" | "withdrawn";
-  notificationStatus: "pending" | "sent" | "failed" | "not_configured";
+  notificationStatus:
+    | "pending"
+    | "sent"
+    | "delivered"
+    | "read"
+    | "failed"
+    | "not_configured"
+    | "consent_required";
   notificationError: string;
   registeredBy: string;
   withdrawnBy: string;
+  failedPickupAttempts: number;
   receivedAt: string;
   notifiedAt: string | null;
   withdrawnAt: string | null;
   pickupCode?: string;
   photoUrl: string;
+};
+
+export type Pagination = {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+};
+
+export type AuditRecord = {
+  id: number;
+  actorEmail: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  metadata: string;
+  createdAt: string;
 };
 
 export type AccessProfile = {

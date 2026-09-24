@@ -2,6 +2,10 @@ import { env } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/d1";
 import * as schema from "./schema";
 
+export function createDb(database: D1Database) {
+  return drizzle(database, { schema });
+}
+
 export function getDb() {
   const runtime = env as unknown as { DB?: D1Database };
   if (!runtime.DB) {
@@ -10,5 +14,5 @@ export function getDb() {
     );
   }
 
-  return drizzle(runtime.DB, { schema });
+  return createDb(runtime.DB);
 }

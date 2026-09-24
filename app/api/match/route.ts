@@ -1,12 +1,18 @@
 import { and, eq } from "drizzle-orm";
 import { getDb } from "../../../db";
 import { residents } from "../../../db/schema";
-import { ApiError, apiError, readJson } from "../../../lib/api";
+import {
+  ApiError,
+  apiError,
+  readJson,
+  requireSameOrigin,
+} from "../../../lib/api";
 import { getActor, requireRole } from "../../../lib/auth";
 import { extractLabelFields, rankResidents } from "../../../lib/matching";
 
 export async function POST(request: Request) {
   try {
+    requireSameOrigin(request);
     const actor = await getActor();
     requireRole(actor, ["admin", "porter"]);
     const payload = await readJson<{ scanText?: string; barcode?: string }>(request);

@@ -18,6 +18,8 @@ import { useCallback, useEffect, useState } from "react";
 
 type WhatsappStatus = {
   configured: boolean;
+  provider?: "cloud_api" | "baileys" | "disabled";
+  official?: boolean;
   state: string;
   connected?: boolean;
   qrAvailable?: boolean;
@@ -137,8 +139,10 @@ export function WhatsappConnect() {
     <div className="mx-auto max-w-5xl space-y-5">
       <div>
         <p className="text-xs font-bold uppercase tracking-[0.16em] text-[#0d7658]">Canal de avisos</p>
-        <h1 className="mt-2 text-3xl font-bold tracking-tight">Conectar WhatsApp</h1>
-        <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">A conexão é feita nesta tela. O QR Code e o código de pareamento nunca ficam expostos no terminal.</p>
+        <h1 className="mt-2 text-3xl font-bold tracking-tight">WhatsApp</h1>
+        <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
+          O ambiente comercial usa a API oficial da Meta. A conexão por QR Code permanece disponível somente durante a migração do serviço legado.
+        </p>
       </div>
 
       {error && (
@@ -155,14 +159,14 @@ export function WhatsappConnect() {
         <section className="overflow-hidden rounded-3xl border border-amber-200 bg-white shadow-sm">
           <div className="bg-amber-50 p-6 sm:p-8">
             <span className="grid h-14 w-14 place-items-center rounded-2xl bg-amber-100 text-amber-700"><Cloud className="h-7 w-7" /></span>
-            <h2 className="mt-5 text-2xl font-bold text-amber-950">Ative o serviço de conexão</h2>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-amber-900">O portal web está pronto, mas o WhatsApp precisa de um pequeno serviço Node.js sempre ligado para conservar a sessão.</p>
+            <h2 className="mt-5 text-2xl font-bold text-amber-950">Configure a API oficial da Meta</h2>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-amber-900">Cadastre o número na WhatsApp Business Platform, aprove o modelo de aviso e configure as credenciais protegidas na hospedagem.</p>
           </div>
           <div className="grid gap-4 p-6 sm:grid-cols-3 sm:p-8">
             {[
-              ["1", "Publique a pasta", "Use a pasta whatsapp-service em um host Node com armazenamento persistente."],
-              ["2", "Crie o segredo", "Defina WHATSAPP_SERVICE_TOKEN com pelo menos 32 caracteres nos dois serviços."],
-              ["3", "Informe a URL", "Configure WHATSAPP_SERVICE_URL no portal e volte para gerar o QR Code."],
+              ["1", "Cadastre o número", "Use um número aprovado no Meta Business Manager."],
+              ["2", "Aprove o modelo", "Crie o modelo encomenda_recebida com foto e quatro variáveis."],
+              ["3", "Proteja as credenciais", "Configure token, identificador do número, versão da API e webhook na hospedagem."],
             ].map(([number, title, text]) => (
               <article key={number} className="rounded-2xl bg-slate-50 p-4">
                 <span className="grid h-8 w-8 place-items-center rounded-lg bg-[#0d7658] text-xs font-bold text-white">{number}</span>
@@ -184,12 +188,19 @@ export function WhatsappConnect() {
               <Wifi className="h-5 w-5 shrink-0 text-[#0d7658]" />
               <div><strong className="block text-sm">Sessão ativa</strong><span className="text-xs text-slate-500">{stateLabel(status.state)}</span></div>
             </div>
+            {status.provider === "cloud_api" ? (
+              <div className="mx-auto mt-8 max-w-md rounded-2xl border border-blue-100 bg-blue-50 p-4 text-left text-blue-950">
+                <h3 className="flex items-center gap-2 text-sm font-bold"><ShieldCheck className="h-4 w-4" /> Canal oficial ativo</h3>
+                <p className="mt-2 text-xs leading-5 text-blue-800">Número, modelos, permissões e desconexão são administrados com segurança no Meta Business Manager. O portal não expõe o token.</p>
+              </div>
+            ) : (
             <div className="mx-auto mt-8 max-w-md rounded-2xl border border-red-100 bg-red-50 p-4 text-left">
               <h3 className="flex items-center gap-2 text-sm font-bold text-red-900"><Unplug className="h-4 w-4" /> Trocar o número conectado</h3>
               <p className="mt-2 text-xs leading-5 text-red-700">Isso encerra a sessão atual e exige uma nova conexão.</p>
               <input value={resetConfirmation} onChange={(event) => setResetConfirmation(event.target.value.toUpperCase())} placeholder="Digite DESCONECTAR" className="mt-3 h-11 w-full rounded-xl border border-red-200 bg-white px-3 text-sm" />
               <button onClick={() => void resetSession()} disabled={busy || resetConfirmation !== "DESCONECTAR"} className="mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-red-700 text-xs font-bold text-white disabled:opacity-40">{busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Unplug className="h-4 w-4" />} Desconectar sessão</button>
             </div>
+            )}
           </div>
         </section>
       ) : (
