@@ -29,7 +29,9 @@ export async function GET(
       .from(packages)
       .where(condition)
       .limit(1);
-    if (!item) throw new ApiError(404, "Foto não encontrada.");
+    if (!item || !item.photoKey) {
+      throw new ApiError(404, "Foto não encontrada ou já removida.");
+    }
 
     const bucket = (env as unknown as { BUCKET?: R2Bucket }).BUCKET;
     if (!bucket) throw new ApiError(503, "Armazenamento indisponível.");
@@ -38,7 +40,7 @@ export async function GET(
     return new Response(object.body, {
       headers: {
         "Content-Type": object.httpMetadata?.contentType || item.photoMime,
-        "Cache-Control": "private, max-age=300",
+        "Cache-Control": "private, no-store, max-age=0",
         "X-Content-Type-Options": "nosniff",
       },
     });

@@ -38,7 +38,12 @@ type RegistrationResult = {
     photoUrl: string;
   };
   notification: {
-    status: "sent" | "failed" | "not_configured";
+    status:
+      | "pending"
+      | "sent"
+      | "failed"
+      | "not_configured"
+      | "consent_required";
     error?: string;
   };
 };
@@ -140,6 +145,7 @@ export function ReceivePackage({
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const idempotencyKeyRef = useRef("");
 
   const stopCamera = () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -170,6 +176,7 @@ export function ReceivePackage({
       setTrackingCode("");
       setCandidates([]);
       setSelectedResidentId(null);
+      idempotencyKeyRef.current = "";
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Não foi possível abrir a foto.");
     } finally {
@@ -217,6 +224,9 @@ export function ReceivePackage({
   };
 
   const matchResidents = async (text: string, barcode: string) => {
+    // Uma nova leitura sempre exige uma nova confirmação humana. Manter a
+    // seleção anterior poderia enviar a foto da etiqueta ao morador errado.
+    setSelectedResidentId(null);
     const response = await fetch("/api/match", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -225,9 +235,6 @@ export function ReceivePackage({
     const payload = (await response.json()) as { error?: string; candidates?: Candidate[] };
     if (!response.ok) throw new Error(payload.error || "Não foi possível buscar o morador.");
     setCandidates(payload.candidates ?? []);
-    if (payload.candidates?.[0]?.score && payload.candidates[0].score >= 85) {
-      setSelectedResidentId(payload.candidates[0].id);
-    }
   };
 
   const analyze = async () => {
@@ -293,11 +300,15 @@ export function ReceivePackage({
     setError("");
     try {
       const form = new FormData();
+      if (!idempotencyKeyRef.current) {
+        idempotencyKeyRef.current = crypto.randomUUID();
+      }
       form.set("photo", photo);
       form.set("residentId", String(selectedResidentId));
       form.set("description", description);
       form.set("trackingCode", trackingCode);
       form.set("scanText", scanText);
+      form.set("idempotencyKey", idempotencyKeyRef.current);
       const response = await fetch("/api/encomendas", { method: "POST", body: form });
       const payload = (await response.json()) as RegistrationResult & { error?: string };
       if (!response.ok) throw new Error(payload.error || "Não foi possível registrar a encomenda.");
@@ -323,6 +334,7 @@ export function ReceivePackage({
     setDescription("");
     setError("");
     setResult(null);
+    idempotencyKeyRef.current = "";
   };
 
   const selected = residents.find((resident) => resident.id === selectedResidentId);
@@ -491,7 +503,10 @@ export function ReceivePackage({
               Código encontrado
               <input
                 value={trackingCode}
-                onChange={(event) => setTrackingCode(event.target.value)}
+                onChange={(event) => {
+                  setTrackingCode(event.target.value);
+                  setSelectedResidentId(null);
+                }}
                 placeholder="Código de rastreamento"
                 className="mt-2 h-12 w-full rounded-xl border border-slate-200 px-4 text-sm font-normal text-slate-900"
               />
@@ -500,7 +515,10 @@ export function ReceivePackage({
               Texto da etiqueta
               <textarea
                 value={scanText}
-                onChange={(event) => setScanText(event.target.value)}
+                onChange={(event) => {
+                  setScanText(event.target.value);
+                  setSelectedResidentId(null);
+                }}
                 placeholder="Corrija ou digite nome, bloco e apartamento"
                 rows={7}
                 className="mt-2 w-full rounded-xl border border-slate-200 p-4 text-sm font-normal leading-6 text-slate-900"
@@ -613,7 +631,11 @@ export function ReceivePackage({
             <div className={`mx-auto mt-6 max-w-md rounded-2xl p-4 text-sm ${result.notification.status === "sent" ? "bg-emerald-50 text-emerald-800" : "bg-amber-50 text-amber-900"}`}>
               {result.notification.status === "sent"
                 ? "WhatsApp enviado com a foto da encomenda."
-                : `A encomenda foi salva, mas o aviso não foi enviado: ${result.notification.error || "verifique a conexão."}`}
+                : result.notification.status === "pending"
+                  ? "Encomenda salva. O aviso entrou na fila de envio."
+                  : result.notification.status === "consent_required"
+                    ? "Encomenda salva. O aviso aguarda a autorização do morador para receber mensagens."
+                    : `A encomenda foi salva, mas o aviso não foi enviado: ${result.notification.error || "verifique a conexão."}`}
             </div>
             <button onClick={reset} className="mt-6 inline-flex h-13 items-center justify-center gap-2 rounded-xl bg-[#0d7658] px-6 font-bold text-white">
               <RefreshCw className="h-5 w-5" /> Receber outra encomenda

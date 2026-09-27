@@ -9,7 +9,7 @@ import makeWASocket, {
   Browsers,
   DisconnectReason,
   fetchLatestBaileysVersion,
-  useMultiFileAuthState,
+  useMultiFileAuthState as createMultiFileAuthState,
 } from "@whiskeysockets/baileys";
 
 const PORT = Number(process.env.PORT || process.env.WHATSAPP_SERVICE_PORT || 3001);
@@ -103,7 +103,7 @@ async function startConnection() {
   connectionState = "connecting";
   try {
     await fs.mkdir(SESSION_PATH, { recursive: true });
-    const { state, saveCreds } = await useMultiFileAuthState(SESSION_PATH);
+    const { state, saveCreds } = await createMultiFileAuthState(SESSION_PATH);
     const { version } = await fetchLatestBaileysVersion();
     const currentSocket = makeWASocket({
       version,
@@ -301,7 +301,8 @@ app.post("/reset-session", rateLimit, async (req, res) => {
   }
 });
 
-app.use((error, _req, res, _next) => {
+app.use((error, _req, res, next) => {
+  void next;
   if (error?.type === "entity.too.large") {
     return res.status(413).json({ ok: false, error: "Conteúdo maior que o limite permitido." });
   }

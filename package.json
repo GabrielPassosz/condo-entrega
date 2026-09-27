@@ -10,14 +10,17 @@
     "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vite",
     "build": "bash scripts/build-verified.sh",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs",
+    "test": "npm run test:unit && npm run build && node --test tests/rendered-html.test.mjs",
+    "test:unit": "node --experimental-strip-types --test tests/pickup-code.test.mjs tests/migrations.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run lint && npm run typecheck && npm test",
     "lint": "bash scripts/sites-env.sh -- eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
     "lucide-react": "^1.33.0",
-    "next": "16.2.6",
+    "next": "16.3.5",
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "read-excel-file": "^9.3.10",
@@ -34,7 +37,7 @@
     "@vitejs/plugin-rsc": "0.5.26",
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
+    "eslint-config-next": "16.3.5",
     "react-server-dom-webpack": "19.2.6",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
@@ -43,5 +46,8 @@
     "wrangler": "4.92.0"
   },
   "type": "module",
-  "displayName": "CondoEntrega"
+  "displayName": "CondoEntrega",
+  "overrides": {
+    "baseline-browser-mapping": "2.11.23"
+  }
 }

@@ -22,6 +22,9 @@ const socialImage = metadataBase
 
 export const metadata: Metadata = {
   metadataBase,
+  other: {
+    "codex-preview": "development",
+  },
   title: "CondoEntrega — Encomendas sem papelada",
   description:
     "Receba, identifique e avise moradores sobre encomendas diretamente pelo celular.",

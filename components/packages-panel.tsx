@@ -4,16 +4,21 @@ import {
   AlertCircle,
   Box,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   ImageIcon,
   LoaderCircle,
   PackageCheck,
+  RefreshCw,
+  RotateCcw,
   Search,
   ShieldCheck,
+  Trash2,
   X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
-import type { ActorRole, PackageRecord } from "../lib/types";
+import { useCallback, useEffect, useState } from "react";
+import type { ActorRole, PackageRecord, Pagination } from "../lib/types";
 
 function formatDate(value: string | null) {
   if (!value) return "—";
@@ -25,9 +30,16 @@ function formatDate(value: string | null) {
 
 function notificationLabel(status: PackageRecord["notificationStatus"]) {
   if (status === "sent") return "WhatsApp enviado";
+  if (status === "delivered") return "WhatsApp entregue";
+  if (status === "read") return "WhatsApp visualizado";
   if (status === "failed") return "Falha no WhatsApp";
   if (status === "not_configured") return "WhatsApp não conectado";
+  if (status === "consent_required") return "Aguardando autorização";
   return "Aviso pendente";
+}
+
+function notificationSucceeded(status: PackageRecord["notificationStatus"]) {
+  return ["sent", "delivered", "read"].includes(status);
 }
 
 export function PackagesPanel({
@@ -46,18 +58,51 @@ export function PackagesPanel({
   const [withdrawnBy, setWithdrawnBy] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [records, setRecords] = useState(packages);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<Pagination>({
+    page: 1,
+    pageSize: 50,
+    total: packages.length,
+    totalPages: 1,
+  });
+  const [listLoading, setListLoading] = useState(false);
 
-  const visible = useMemo(() => {
-    const normalized = query.trim().toLocaleLowerCase("pt-BR");
-    return packages.filter((item) => {
-      if (filter !== "all" && item.status !== filter) return false;
-      if (!normalized) return true;
-      return [item.residentName, item.unit, item.description, item.trackingCode]
-        .join(" ")
-        .toLocaleLowerCase("pt-BR")
-        .includes(normalized);
-    });
-  }, [filter, packages, query]);
+  const loadPackages = useCallback(async () => {
+    setListLoading(true);
+    try {
+      const params = new URLSearchParams({
+        page: String(page),
+        pageSize: "50",
+        status: filter,
+      });
+      if (query.trim()) params.set("q", query.trim());
+      const response = await fetch(`/api/encomendas?${params}`, {
+        cache: "no-store",
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        packages?: PackageRecord[];
+        pagination?: Pagination;
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(payload.error || "Não foi possível carregar as encomendas.");
+      }
+      setRecords(payload.packages ?? []);
+      if (payload.pagination) setPagination(payload.pagination);
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "Falha ao carregar a lista.",
+      );
+    } finally {
+      setListLoading(false);
+    }
+  }, [filter, page, query]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadPackages(), 300);
+    return () => window.clearTimeout(timer);
+  }, [loadPackages]);
 
   const close = () => {
     setSelected(null);
@@ -80,8 +125,46 @@ export function PackagesPanel({
       if (!response.ok) throw new Error(payload.error || "Não foi possível confirmar a retirada.");
       close();
       await onChanged();
+      await loadPackages();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Falha ao confirmar a retirada.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const packageAction = async (
+    action: "reenviar" | "desbloquear" | "excluir",
+  ) => {
+    if (!selected) return;
+    if (
+      action === "excluir" &&
+      !window.confirm(
+        "Excluir definitivamente esta encomenda e sua foto? Esta ação não pode ser desfeita.",
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(
+        action === "excluir"
+          ? `/api/encomendas/${selected.id}`
+          : `/api/encomendas/${selected.id}/${action}`,
+        { method: action === "excluir" ? "DELETE" : "POST" },
+      );
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(payload.error || "Não foi possível concluir a ação.");
+      }
+      close();
+      await onChanged();
+      await loadPackages();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Falha na operação.");
     } finally {
       setBusy(false);
     }
@@ -101,13 +184,24 @@ export function PackagesPanel({
         </p>
       </div>
 
+      {error && !selected && (
+        <div className="flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+          <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
+          <span className="flex-1">{error}</span>
+          <button onClick={() => setError("")} className="text-xs font-bold">Fechar</button>
+        </div>
+      )}
+
       <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <label className="relative block flex-1 md:max-w-lg">
             <Search className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             <input
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setPage(1);
+              }}
               placeholder="Buscar morador, unidade ou rastreio"
               className="h-12 w-full rounded-xl border border-slate-200 bg-slate-50 pl-11 pr-4 text-sm outline-none focus:border-emerald-400 focus:bg-white"
             />
@@ -120,7 +214,10 @@ export function PackagesPanel({
             ] as const).map(([value, label]) => (
               <button
                 key={value}
-                onClick={() => setFilter(value)}
+                onClick={() => {
+                  setFilter(value);
+                  setPage(1);
+                }}
                 className={`rounded-lg px-3 py-2.5 ${filter === value ? "bg-white text-[#0d7658] shadow-sm" : "text-slate-500"}`}
               >
                 {label}
@@ -130,7 +227,7 @@ export function PackagesPanel({
         </div>
 
         <div className="mt-5 grid gap-3 xl:grid-cols-2">
-          {visible.map((item) => (
+          {records.map((item) => (
             <article key={item.id} className="overflow-hidden rounded-2xl border border-slate-200">
               <div className="flex gap-4 p-4 sm:p-5">
                 <button
@@ -138,8 +235,12 @@ export function PackagesPanel({
                   className="relative h-24 w-24 shrink-0 overflow-hidden rounded-2xl bg-slate-100 sm:h-28 sm:w-28"
                   aria-label="Ver foto e detalhes"
                 >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={item.photoUrl} alt="Foto da encomenda" className="h-full w-full object-cover" />
+                  {item.photoUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={item.photoUrl} alt="Foto da encomenda" className="h-full w-full object-cover" />
+                  ) : (
+                    <ImageIcon className="m-auto h-7 w-7 text-slate-300" />
+                  )}
                   <span className="absolute bottom-1.5 right-1.5 grid h-7 w-7 place-items-center rounded-lg bg-black/65 text-white">
                     <ImageIcon className="h-3.5 w-3.5" />
                   </span>
@@ -158,8 +259,8 @@ export function PackagesPanel({
                   <div className="mt-3 flex items-center gap-2 text-[11px] text-slate-400">
                     <Clock3 className="h-3.5 w-3.5" /> {formatDate(item.receivedAt)}
                   </div>
-                  <div className={`mt-2 flex items-center gap-2 text-[11px] font-semibold ${item.notificationStatus === "sent" ? "text-emerald-700" : "text-amber-700"}`}>
-                    {item.notificationStatus === "sent" ? <CheckCircle2 className="h-3.5 w-3.5" /> : <AlertCircle className="h-3.5 w-3.5" />}
+                  <div className={`mt-2 flex items-center gap-2 text-[11px] font-semibold ${notificationSucceeded(item.notificationStatus) ? "text-emerald-700" : "text-amber-700"}`}>
+                    {notificationSucceeded(item.notificationStatus) ? <CheckCircle2 className="h-3.5 w-3.5" /> : <AlertCircle className="h-3.5 w-3.5" />}
                     {notificationLabel(item.notificationStatus)}
                   </div>
                 </div>
@@ -181,7 +282,7 @@ export function PackagesPanel({
           ))}
         </div>
 
-        {visible.length === 0 && (
+        {records.length === 0 && !listLoading && (
           <div className="grid min-h-56 place-items-center text-center">
             <div>
               <Box className="mx-auto h-10 w-10 text-slate-300" />
@@ -190,6 +291,33 @@ export function PackagesPanel({
             </div>
           </div>
         )}
+        <div className="mt-5 flex items-center justify-between border-t border-slate-100 pt-4">
+          <span className="text-xs text-slate-500">
+            {pagination.total} registro(s) · página {pagination.page} de {pagination.totalPages}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+              disabled={page <= 1 || listLoading}
+              className="grid h-10 w-10 place-items-center rounded-xl border border-slate-200 disabled:opacity-40"
+              aria-label="Página anterior"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <button
+              onClick={() =>
+                setPage((current) =>
+                  Math.min(pagination.totalPages, current + 1),
+                )
+              }
+              disabled={page >= pagination.totalPages || listLoading}
+              className="grid h-10 w-10 place-items-center rounded-xl border border-slate-200 disabled:opacity-40"
+              aria-label="Próxima página"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
       </section>
 
       {selected && (
@@ -205,8 +333,12 @@ export function PackagesPanel({
               </button>
             </div>
             <div className="p-5 sm:p-6">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={selected.photoUrl} alt="Foto registrada da encomenda" className="max-h-[420px] w-full rounded-2xl bg-slate-100 object-contain" />
+              {selected.photoUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={selected.photoUrl} alt="Foto registrada da encomenda" className="max-h-[420px] w-full rounded-2xl bg-slate-100 object-contain" />
+              ) : (
+                <div className="grid h-48 place-items-center rounded-2xl bg-slate-100 text-sm text-slate-500">Foto removida pela política de retenção.</div>
+              )}
 
               <dl className="mt-5 grid grid-cols-2 gap-3 text-sm">
                 <div className="rounded-xl bg-slate-50 p-3">
@@ -277,6 +409,36 @@ export function PackagesPanel({
                     {busy ? <LoaderCircle className="h-5 w-5 animate-spin" /> : <PackageCheck className="h-5 w-5" />}
                     Confirmar retirada
                   </button>
+                </div>
+              )}
+
+              {actorRole !== "resident" && (
+                <div className="mt-5 grid gap-2 sm:grid-cols-2">
+                  <button
+                    onClick={() => void packageAction("reenviar")}
+                    disabled={busy || selected.status !== "waiting" || !selected.photoUrl}
+                    className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50 text-xs font-bold text-blue-800 disabled:opacity-40"
+                  >
+                    <RefreshCw className="h-4 w-4" /> Reenviar aviso
+                  </button>
+                  {actorRole === "admin" && selected.failedPickupAttempts >= 5 && (
+                    <button
+                      onClick={() => void packageAction("desbloquear")}
+                      disabled={busy}
+                      className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-amber-200 bg-amber-50 text-xs font-bold text-amber-800 disabled:opacity-40"
+                    >
+                      <RotateCcw className="h-4 w-4" /> Desbloquear retirada
+                    </button>
+                  )}
+                  {actorRole === "admin" && (
+                    <button
+                      onClick={() => void packageAction("excluir")}
+                      disabled={busy}
+                      className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 text-xs font-bold text-red-800 disabled:opacity-40 sm:col-span-2"
+                    >
+                      <Trash2 className="h-4 w-4" /> Excluir encomenda e foto
+                    </button>
+                  )}
                 </div>
               )}
             </div>

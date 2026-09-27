@@ -13,19 +13,21 @@ import {
   PackageCheck,
   RefreshCw,
   ScanLine,
+  Settings2,
   Smartphone,
   UsersRound,
   WifiOff,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { chatGPTSignOutPath } from "../app/chatgpt-auth";
 import type { BootstrapData, PackageRecord, Resident } from "../lib/types";
 import { PackagesPanel } from "./packages-panel";
 import { ReceivePackage } from "./receive-package";
 import { ResidentsPanel } from "./residents-panel";
 import { WhatsappConnect } from "./whatsapp-connect";
+import { CondominiumSwitcher } from "./condominium-switcher";
+import { AdminPanel } from "./admin-panel";
 
-type Tab = "home" | "receive" | "packages" | "residents" | "whatsapp";
+type Tab = "home" | "receive" | "packages" | "residents" | "whatsapp" | "admin";
 
 const roleLabels = {
   admin: "Administrador",
@@ -49,7 +51,13 @@ function formatDate(value: string | null) {
   }).format(new Date(value));
 }
 
-export function CondoApp({ identity }: { identity: { name: string; email: string } }) {
+export function CondoApp({
+  identity,
+  signOutPath,
+}: {
+  identity: { name: string; email: string };
+  signOutPath: string;
+}) {
   const [activeTab, setActiveTab] = useState<Tab>("home");
   const [bootstrap, setBootstrap] = useState<BootstrapData | null>(null);
   const [packages, setPackages] = useState<PackageRecord[]>([]);
@@ -63,8 +71,16 @@ export function CondoApp({ identity }: { identity: { name: string; email: string
       const bootstrapData = await readResponse<BootstrapData>(await fetch("/api/bootstrap"));
       setBootstrap(bootstrapData);
       const [packageData, residentData] = await Promise.all([
-        readResponse<{ packages: PackageRecord[] }>(await fetch("/api/encomendas")),
-        readResponse<{ residents: Resident[] }>(await fetch("/api/moradores")),
+        readResponse<{ packages: PackageRecord[] }>(
+          await fetch("/api/encomendas?status=waiting&pageSize=20"),
+        ),
+        readResponse<{ residents: Resident[] }>(
+          await fetch(
+            bootstrapData.actor.role === "admin"
+              ? "/api/moradores?includeInactive=1"
+              : "/api/moradores",
+          ),
+        ),
       ]);
       setPackages(packageData.packages);
       setResidents(residentData.residents);
@@ -133,6 +149,7 @@ export function CondoApp({ identity }: { identity: { name: string; email: string
     { id: "packages", label: bootstrap.actor.role === "resident" ? "Minhas" : "Encomendas", icon: History, visible: true },
     { id: "residents", label: "Moradores", icon: UsersRound, visible: canOperate },
     { id: "whatsapp", label: "WhatsApp", icon: Smartphone, visible: isAdmin },
+    { id: "admin", label: "Administrar", icon: Settings2, visible: isAdmin },
   ];
 
   const openTab = (tab: Tab) => {
@@ -144,15 +161,18 @@ export function CondoApp({ identity }: { identity: { name: string; email: string
     <div className="min-h-screen bg-[#f4f7f5] text-[#13251f]">
       <header className="sticky top-0 z-40 border-b border-emerald-950/5 bg-white/95 backdrop-blur-xl">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6">
-          <button onClick={() => openTab("home")} className="flex items-center gap-3 text-left">
-            <span className="grid h-10 w-10 place-items-center rounded-xl bg-[#0d7658] text-white shadow-lg shadow-emerald-950/15">
-              <Box className="h-5 w-5" />
-            </span>
-            <span>
-              <strong className="block text-[15px] leading-4">CondoEntrega</strong>
-              <span className="text-xs text-[#6c7b75]">{bootstrap.condominium.name}</span>
-            </span>
-          </button>
+          <div className="flex items-center gap-3">
+            <button onClick={() => openTab("home")} className="flex items-center gap-3 text-left">
+              <span className="grid h-10 w-10 place-items-center rounded-xl bg-[#0d7658] text-white shadow-lg shadow-emerald-950/15">
+                <Box className="h-5 w-5" />
+              </span>
+              <span>
+                <strong className="block text-[15px] leading-4">CondoEntrega</strong>
+                <span className="text-xs text-[#6c7b75]">Portaria digital</span>
+              </span>
+            </button>
+            <CondominiumSwitcher bootstrap={bootstrap} />
+          </div>
 
           <nav className="hidden items-center gap-1 lg:flex" aria-label="Navegação principal">
             {navItems.filter((item) => item.visible).map((item) => {
@@ -179,7 +199,7 @@ export function CondoApp({ identity }: { identity: { name: string; email: string
               <p className="text-xs text-[#6c7b75]">{roleLabels[bootstrap.actor.role]}</p>
             </div>
             <a
-              href={chatGPTSignOutPath("/")}
+              href={signOutPath}
               aria-label="Sair"
               className="grid h-10 w-10 place-items-center rounded-xl border border-slate-200 bg-white text-slate-500 hover:text-slate-900"
             >
@@ -201,8 +221,8 @@ export function CondoApp({ identity }: { identity: { name: string; email: string
                   <WifiOff className="h-5 w-5" />
                 </span>
                 <span className="min-w-0 flex-1">
-                  <strong className="block text-sm">WhatsApp precisa ser conectado</strong>
-                  <span className="block truncate text-xs text-amber-800">Abra a tela de conexão para ver o QR Code.</span>
+                  <strong className="block text-sm">WhatsApp precisa ser configurado</strong>
+                  <span className="block truncate text-xs text-amber-800">Confira a configuração segura da API oficial.</span>
                 </span>
                 <ChevronRight className="h-5 w-5 shrink-0" />
               </button>
@@ -290,7 +310,7 @@ export function CondoApp({ identity }: { identity: { name: string; email: string
 
         {activeTab === "receive" && canOperate && (
           <ReceivePackage
-            residents={residents}
+            residents={residents.filter((resident) => resident.active)}
             onRegistered={async () => {
               await loadAll();
             }}
@@ -311,6 +331,9 @@ export function CondoApp({ identity }: { identity: { name: string; email: string
           />
         )}
         {activeTab === "whatsapp" && isAdmin && <WhatsappConnect />}
+        {activeTab === "admin" && isAdmin && (
+          <AdminPanel bootstrap={bootstrap} onChanged={loadAll} />
+        )}
       </main>
 
       <nav className="safe-bottom fixed inset-x-0 bottom-0 z-50 border-t border-slate-200 bg-white/95 px-2 pt-2 backdrop-blur-xl lg:hidden" aria-label="Navegação móvel">

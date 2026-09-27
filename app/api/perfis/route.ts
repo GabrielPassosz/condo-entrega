@@ -1,7 +1,13 @@
 import { and, asc, eq } from "drizzle-orm";
 import { getDb } from "../../../db";
 import { profiles, residents } from "../../../db/schema";
-import { ApiError, apiError, readJson } from "../../../lib/api";
+import {
+  ApiError,
+  apiError,
+  readJson,
+  requireSameOrigin,
+} from "../../../lib/api";
+import { writeAudit } from "../../../lib/audit";
 import { ActorRole, getActor, requireRole } from "../../../lib/auth";
 import { normalizeEmail, safeText } from "../../../lib/normalize";
 
@@ -10,7 +16,17 @@ export async function GET() {
     const actor = await getActor();
     requireRole(actor, ["admin"]);
     const rows = await getDb()
-      .select()
+      .select({
+        id: profiles.id,
+        condominiumId: profiles.condominiumId,
+        residentId: profiles.residentId,
+        email: profiles.email,
+        displayName: profiles.displayName,
+        role: profiles.role,
+        active: profiles.active,
+        createdAt: profiles.createdAt,
+        updatedAt: profiles.updatedAt,
+      })
       .from(profiles)
       .where(eq(profiles.condominiumId, actor.condominiumId))
       .orderBy(asc(profiles.role), asc(profiles.displayName));
@@ -22,6 +38,7 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
+    requireSameOrigin(request);
     const actor = await getActor();
     requireRole(actor, ["admin"]);
     const payload = await readJson<{
@@ -71,9 +88,31 @@ export async function POST(request: Request) {
     const [profile] = await getDb()
       .insert(profiles)
       .values(values)
-      .onConflictDoUpdate({ target: profiles.email, set: values })
+      .onConflictDoUpdate({
+        target: [profiles.condominiumId, profiles.email],
+        set: values,
+      })
       .returning();
-    return Response.json({ profile }, { status: 201 });
+    await writeAudit(actor, "profile.created_or_updated", "profile", profile.id, {
+      role: profile.role,
+      active: profile.active,
+    });
+    return Response.json(
+      {
+        profile: {
+          id: profile.id,
+          condominiumId: profile.condominiumId,
+          residentId: profile.residentId,
+          email: profile.email,
+          displayName: profile.displayName,
+          role: profile.role,
+          active: profile.active,
+          createdAt: profile.createdAt,
+          updatedAt: profile.updatedAt,
+        },
+      },
+      { status: 201 },
+    );
   } catch (error) {
     return apiError(error);
   }

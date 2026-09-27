@@ -1,73 +1,118 @@
-# Publicação do CondoEntrega
+# Publicação segura do CondoEntrega
 
-## 1. Portal web
+## 1. Proteja o primeiro acesso
 
-O portal precisa de uma hospedagem compatível com Cloudflare Workers, D1 e R2.
-Antes da primeira abertura, aplique `drizzle/0000_fancy_sumo.sql` ao banco e
-confirme as ligações:
-
-- D1: `DB`
-- R2: `BUCKET`
-
-Configure `CONDOMINIUM_NAME` e, após conhecer o endereço definitivo,
-`SITE_ORIGIN` com a origem HTTPS completa.
-
-O acesso usa Sign in with ChatGPT. A política de acesso da hospedagem deve
-permitir os usuários desejados; dentro do portal, o administrador vincula cada
-e-mail como portaria, morador ou outro administrador.
-
-## 2. Serviço WhatsApp
-
-Publique a pasta `whatsapp-service/` em um host Node.js 20+ que ofereça:
-
-- HTTPS;
-- processo sempre ligado;
-- volume persistente montado em um caminho como `/data`;
-- variáveis de ambiente secretas.
-
-O `Dockerfile` pode ser usado diretamente. Configure no serviço:
+Configure os segredos **antes** de publicar a URL:
 
 ```text
-PORT=3001
-DATA_DIR=/data
-WHATSAPP_SERVICE_TOKEN=<segredo aleatório com pelo menos 32 caracteres>
-LOG_LEVEL=info
+INITIAL_ADMIN_EMAILS=responsavel@empresa.com
+PICKUP_CODE_SECRET=<64 caracteres hexadecimais aleatórios>
+CONDOMINIUM_NAME=Residencial Exemplo
+SITE_ORIGIN=https://portal.exemplo.com
 ```
 
-Gere o segredo localmente e não o envie por mensagens ou repositórios:
+`INITIAL_ADMIN_EMAILS` aceita uma lista separada por vírgulas. A allowlist só
+funciona quando o D1 ainda não possui condomínio; depois disso, todo acesso
+precisa ser convidado pela tela **Moradores > Acessos**. Assim, uma visita
+anônima à hospedagem não consegue assumir a administração.
+
+Gere `PICKUP_CODE_SECRET` localmente e guarde-o no cofre da hospedagem:
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-Depois configure no portal:
+Perder esse segredo impede a leitura dos códigos de encomendas ainda abertas.
+Não o reutilize como token do WhatsApp.
+
+## 2. Banco, objetos e migrações
+
+Vincule o D1 como `DB` e o R2 privado como `BUCKET`. Faça um backup e aplique,
+uma única vez e em ordem, todos os arquivos ainda não registrados pelo ambiente:
 
 ```text
-WHATSAPP_SERVICE_URL=https://endereco-do-servico
-WHATSAPP_SERVICE_TOKEN=<o mesmo segredo>
+drizzle/0000_fancy_sumo.sql
+drizzle/0001_condemned_maelstrom.sql
+drizzle/0002_watery_stark_industries.sql
 ```
 
-Teste `GET /health` no serviço. O resultado deve indicar que o processo iniciou;
-as outras rotas exigem o token.
+A segunda migração preserva os dados existentes, libera o mesmo e-mail em
+condomínios diferentes e cria outbox, auditoria e campos de retenção. Depois do
+deploy, abra **Administrar > Aplicar retenção agora** para preencher a expiração
+das fotos antigas e cifrar códigos legados; o job agendado faz a mesma conversão
+em lotes pequenos e idempotentes.
 
-## 3. Primeira conexão
+## 3. WhatsApp Business Platform
 
-1. Entre como administrador e abra **WhatsApp**.
-2. Com outro aparelho, escolha **Mostrar QR Code** e leia pelo WhatsApp.
-3. No mesmo telefone, informe o número com DDI e DDD e gere o código de oito
-   dígitos.
-4. Aguarde a tela mudar para **WhatsApp conectado**.
+No aplicativo da Meta:
 
-O conteúdo de `DATA_DIR` mantém a sessão. Se o volume for apagado, será preciso
-parear novamente.
+1. cadastre e valide o número comercial;
+2. crie e aprove o modelo `encomenda_recebida` (ou outro nome configurado);
+3. use cabeçalho de imagem e quatro variáveis de corpo, nesta ordem: nome do
+   morador, condomínio, descrição e código de retirada;
+4. conceda ao token somente as permissões necessárias ao número;
+5. configure o webhook HTTPS
+   `https://portal.exemplo.com/api/webhooks/whatsapp` e assine os eventos de
+   status de mensagens.
 
-## 4. Teste de aceite
+Configure como segredos/variáveis na hospedagem:
 
-1. Importe dois moradores de teste com telefones diferentes.
-2. Fotografe uma etiqueta nítida e confirme a sugestão correta.
-3. Verifique se a mensagem chegou com a foto e o código.
-4. Entre como morador e confirme que somente as próprias encomendas aparecem.
-5. Na portaria, tente um código errado e depois valide o correto.
-6. Confirme no histórico a data e o nome de quem retirou.
+```text
+WHATSAPP_PROVIDER=cloud_api
+WHATSAPP_CLOUD_API_TOKEN=<token protegido>
+WHATSAPP_PHONE_NUMBER_ID=<id do número>
+WHATSAPP_GRAPH_API_VERSION=<versão suportada, no formato vXX.X>
+WHATSAPP_TEMPLATE_NAME=encomenda_recebida
+WHATSAPP_TEMPLATE_LANGUAGE=pt_BR
+WHATSAPP_REQUEST_TIMEOUT_MS=10000
+WHATSAPP_WEBHOOK_VERIFY_TOKEN=<segredo aleatório>
+WHATSAPP_APP_SECRET=<app secret da Meta>
+```
 
-Não use dados reais antes de concluir este teste.
+Nunca exponha o token no cliente nem o grave no D1. A versão da Graph API é
+explícita para que a atualização seja uma decisão operacional consciente.
+
+## 4. Fila e agendamento
+
+A outbox em `notification_jobs` sempre é criada atomicamente com a encomenda.
+Para processamento assíncrono, vincule uma Cloudflare Queue como
+`NOTIFICATION_QUEUE` ao produtor e ao consumidor deste Worker. Configure também
+um gatilho agendado (recomendado: a cada 5 minutos) para:
+
+- recuperar jobs pendentes ou travados;
+- aplicar a retenção de fotos;
+- converter códigos legados em texto puro para o formato cifrado atual;
+- remover uploads órfãos do R2 depois da carência de segurança.
+
+Sem a Queue, o primeiro envio ocorre durante a requisição com timeout explícito;
+a outbox continua durável. O administrador pode executar os jobs pendentes em
+**Administrar**.
+
+## 5. Aceite antes de dados reais
+
+1. Entre com o e-mail exato da allowlist e remova a allowlist após o bootstrap,
+   se a política da organização assim exigir.
+2. Crie um segundo condomínio e confirme que a troca não mistura moradores,
+   fotos, acessos, encomendas nem auditoria.
+3. Cadastre um morador de homologação com consentimento de WhatsApp.
+4. Registre uma etiqueta, altere o texto e confirme que a seleção anterior some.
+5. Repita a mesma requisição e confirme que existe uma única encomenda.
+6. Teste entrega, cinco erros, bloqueio e desbloqueio administrativo.
+7. Force uma falha da Meta, processe a fila e use **Reenviar aviso**.
+8. Execute retenção e confirme que a foto expirada retorna 404.
+9. Faça e restaure um backup de homologação seguindo `docs/OPERATIONS.md`.
+
+## 6. Migração temporária do serviço não oficial
+
+Baileys fica desabilitado por padrão. Se for indispensável manter o piloto por
+um período curto, configure explicitamente:
+
+```text
+WHATSAPP_PROVIDER=baileys
+ALLOW_LEGACY_BAILEYS=true
+WHATSAPP_SERVICE_URL=https://servico-legado.exemplo.com
+WHATSAPP_SERVICE_TOKEN=<segredo independente>
+```
+
+Registre data e responsável pela desativação. Esse modo não substitui a Cloud
+API em uma operação comercial.
